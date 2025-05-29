@@ -26,7 +26,6 @@ params:
 - `plate_map.xlsx`: Kevin from Wasfy lab shared plate map
 :::
 
-
 ```{r setup,cache = FALSE, message = FALSE, warning=FALSE, echo=FALSE,eval=TRUE}
 # setwd("~/hbc/wasfy_olink_human_blood_futbolplayers_hbc05197/")
 library(dplyr)
@@ -44,7 +43,6 @@ import::from(zeallot,"%<-%")
 recompute <- T
 c(longD,oriD,scaledD,meta) %<-% qread("data/wasfy_data.qs")
 ```
-
 
 ```{r mapid,eval=F,echo=F}
 invisible(imaging <- openxlsx::read.xlsx("data/Wasfy_shared.xlsx",sheet=3))
@@ -74,8 +72,82 @@ image_metrics %>%
   DT::datatable()
 ```
 
-## Stats test 
+## Participants meta data check
 
+Please see this table for meta-data of 11 participants.
+```{r patD}
+require(ggpubr)
+c(longD,oriD,scaledD,meta) %<-% qread("data/wasfy_data.qs")
+patD <- meta %>% set_rownames(NULL) %>% select(-tp) %>% distinct() %>% 
+  select(studyID,AGE,Gender,BMI,Hispanic=Ethnicity,
+         t1_t0="Days Between T1 and T0",
+         t2_t1="Days Between T1 and T2") %>% 
+  mutate(Hispanic = case_when(Hispanic=="Hispanic"~"Yes",TRUE~"No"))
+datatable(patD)
+```
+
+
+```{r piebar}
+#| fig-cap: "Gender /ethinity Pie Chart"
+#| fig-subcap: 
+#|   - "Gender"
+#|   - "Ethinity (Hispanic or not)"
+#| layout-ncol: 2
+p1 <- patD %>% group_by(Gender) %>% 
+  summarise(n=n()) %>% 
+  ggpie(x = "n", label = "Gender",lab.pos = "in",
+   fill = "Gender", color = "black",
+   palette = c("#00AFBB", "#E7B800"))
+
+p2 <- patD %>% group_by(Hispanic) %>% 
+  summarise(n=n()) %>% 
+  ggpie(x = "n", label = "Hispanic",lab.pos = "in",
+   fill = "Hispanic", color = "black",
+   palette = c("#00AFBB", "#E7B800"))
+p1
+p2
+```
+
+
+```{r Cat_dist}
+#| fig-cap: "Categorical distributions of Age/BMI"
+#| fig-subcap: 
+#|   - "BMI"
+#|   - "Age"
+#| layout-ncol: 2
+bmi_class <- c(20,22,25,30)
+cut(patD$BMI, breaks=bmi_class)%>% table() %>% 
+  barplot()
+age_class <- seq(40,70,10)
+cut(patD$AGE, breaks=age_class)%>% table() %>% 
+  barplot()
+```
+
+```{r continuous_check}
+#| fig-cap: "Scatterplots of continuous variables (colored by Gender)"
+#| fig-subcap: 
+#|   - "Time lapsed among T0, T1, T2"
+#|   - "Age vs BMI"
+#| layout-ncol: 2
+ggscatter(patD, x = "t1_t0", y = "t2_t1",
+   color = "Gender",
+   palette = c("#00AFBB", "#E7B800"),
+   size=rel(3))+
+  labs(x="Days between T1 and T0",
+       y="Days between T2 and T1")+
+  theme_pubr()
+
+ggscatter(patD, x = "AGE", y = "BMI",
+   color = "Gender",
+   palette = c("#00AFBB", "#E7B800"),
+   size=rel(3))+
+  labs(x="Age",
+       y="BMI")+
+  theme_pubr()
+```
+
+
+## Stats test 
 ```{r formatD}
 library(lme4)
 library(lmerTest)
@@ -145,7 +217,7 @@ modelD%<>%
 assays <- colnames(oriD)
 ```
 
-### Model data
+### Model data 
 
 With previous raw data examination, we found **CT09_T1** has no data returned most likely due to experimental failures (e.g. bubbles in the plate) in processing this sample. 
 
@@ -542,458 +614,52 @@ for(i in unique(cov_sig$assay)){
 ```
 :::
 
-## Relationship between imaging metrics and protein level
+### Multivariate analysis: OLPS-DA 
 
-We considered three metrics to quantify the average change of FAI-SCORE derived from CCTAs for LAD, LCX and RCA between time point 2 ($T_2$) and time point 1 ($T_1$).
+We would like to further examine the inflammation-related protein levels across two time points in the multivariate level.
 
->Change in arithmetic mean of FAI-score for LAD, LCX and RCA between T2 and T1
+- Is there any difference across 92 proteins between two time points?
+- If yes, what are the set of proteins that contribute most to such a distinction?
 
-$\Delta({\text{Arithmetic Mean}}) = \frac{\text{LAD}_{T_2} + \text{LCX}_{T_2}+ \text{RCA}_{T_2}}{3}- \frac{\text{LAD}_{T_1} + \text{LCX}_{T_1} + \text{RCA}_{T_1}}{3}$
+To answer above questions, we decide to use OPLS-DA (Orthogonal Partial Least Squares Discriminant Analysis). OPLS-DA is a method that uses known groupings (in our case, two time points) in provided data to pull out the differences that is curtial, filtering out unrelated noise. In other words, it sharpens the separation between two time point measurements so you can more clearly see which protein(s) distinguishe them. 
 
-It is referred below as **Change_of_Arithmetic**.
+:::{.callout-tip}
+>**Based on the results of OPLS-DA, overall we did not observe a significant change between two time points.**
 
->Change in geometric mean of FAI-score for LAD, LCX and RCA between T2 and T1
+```{r olps}
+library(ropls)
+invisible(res.oplsda <- opls(scaledD, factor(meta$tp), predI = 1, orthoI = NA))
+```
+:::  
 
-$\Delta(\textrm{Geometric Mean}) = \sqrt[3]{\text{LAD}_{T_2} \cdot \text{LCX}_{T_2} \cdot \text{RCA}_{T_2}} - \sqrt[3]{\text{LAD}_{T_1} \cdot \text{LCX}_{T_1} \cdot \text{RCA}_{T_1}})$
+```{r resultsOut}
+fortmatOut <- base_modelout%>%
+  mutate(pval = formatC(pval, format = "E", digits = 2)) %>%  
+  mutate_at(c("Estimate","FDR"),round,digits=3)
 
-It is referred below as **Change_of_Geometric**.
+split(fortmatOut,fortmatOut$data2model) %>%
+  openxlsx::write.xlsx("intmd/base_LinearMixedModel_outputs.xlsx")
 
->Arithmetic mean of changes of FAI-score for LAD, LCX and RCA between T2 and T1 scaled by the average of two time points 
-
-$\text{Mean}(\Delta_{\text{scaled}}) = \frac{1}{3} \left[\frac{\text{LAD}_{T_2} - \text{LAD}_{T_1}}{(\text{LAD}_{T_2} + \text{LAD}_{T_1})/2} +\frac{\text{LCX}_{T_2} - \text{LCX}_{T_1}}{(\text{LCX}_{T_2} + \text{LCX}_{T_1})/2} +\frac{\text{RCA}_{T_2} - \text{RCA}_{T_1}}{(\text{RCA}_{T_2} + \text{RCA}_{T_1})/2} \right]$
-
-It is referred below as **Mean_of_Change**.
-
-
-```{r load_in_imagingD}
-invisible(imaging <- openxlsx::read.xlsx("data/CTFAI OLINK Catalyst Compiled.xlsx",sheet=3))
-colnames(imaging) <- gsub(".Percentile","_Percentile",make.unique(colnames(imaging)))
-colnames(imaging)[1] <- "studyID"
-image_metrics <- imaging %>% 
-  gather(metric,value,-studyID) %>% 
-  filter(!grepl("avg|average",metric,ignore.case = T)) %>% 
-  separate("metric",c("metric","tp"),sep="\\.") %>% 
-  mutate(tp=paste0("t",tp)) %>%
-  mutate(value=ifelse(value=="n/a",NA,as.numeric(value))) %>% 
-  filter(grepl("FAISCORE",metric))
+map(adj_modelFits,\(d) d$fixed_summary%>%
+  mutate(pval = formatC(pval, format = "E", digits = 2)) %>%  
+  mutate_at(c("Estimate"),round,digits=3) %>% 
+  filter(!grepl("Intercept",variable))) %>% 
+  openxlsx::write.xlsx("intmd/Adj_t1_t0_LinearMixedModel_outputs.xlsx")
 ```
 
-```{r compute_avg}
-geometric_mean <- function(x){exp(mean(log(x[!is.na(x)])))}
-change_avg <- image_metrics%>%
-  group_by(studyID,tp) %>% 
-  summarise(FAISCORE_avg=mean(value,na.rm=T),
-            FAISCORE_avg2=geometric_mean(value)) %>% 
-  gather(metric,value,-tp,-studyID) %>% 
-  spread(tp,value) %>% 
-  group_by(studyID) %>% 
-  mutate(value = t2-t1) %>% 
-  select(studyID,metric,value)
-avg_change <- image_metrics%>%
-  spread(tp,value) %>% 
-  mutate(deltap =(t2-t1)*2/(t1+t2)) %>% 
-  group_by(studyID) %>% 
-  summarise(value=mean(deltap,na.rm=T)) %>% 
-  mutate(metric="FAISCORE_avg3",.before="value")
-imagingD <- rbind(change_avg,avg_change)
-imaging_metric <- imagingD %>% spread(metric,value) %>% column_to_rownames("studyID")
+### mnova+RM 
+
+```{r multRM,eval=F}
+library(MANOVA.RM)
+D <- as.matrix(oriD[rownames(meta)!="CT09_T2",1:30])
+fit <- multRM(D ~ Gender * tp,
+              data = meta[rownames(meta)!="CT09_T2",],
+              subject = "studyID",
+              within = "tp", iter = 1000)
+summary(fit)
 ```
 
-
-```{r diff_olink}
-olinkD <- oriD %>% 
-  rownames_to_column("studyID") %>% 
-  gather(assay,value,-studyID) %>% 
-  separate("studyID",c("studyID","tp")) %>% 
-  spread(tp,value) %>% 
-  mutate(dassay = T2-T1) %>% 
-  select(studyID,assay,dassay) %>% 
-  spread(assay,dassay) %>% 
-  column_to_rownames("studyID")
-sharedID <- setdiff(intersect(rownames(imaging_metric),rownames(olinkD)),"CT09")
-olinkD <-olinkD[sharedID,] 
-imaging_metric <- imaging_metric[sharedID,]
-colnames(imaging_metric) <- c("Change_of_Arithmetic","Change_of_Geometric","Mean_of_Change")
-```
-
-### Analysis across 9 participants, CT05 included
-
-####  Pearson correlation
-
-```{r cuz_fxn}
-matCor <- function(mat1_df,mat2_df,cor_method="pearson"){
-  # Preallocate result containers
-  n1 <- ncol(mat1_df)
-  n2 <- ncol(mat2_df)
-  cor_matrix <- matrix(NA, nrow = n1, ncol = n2)
-  p_matrix <- matrix(NA, nrow = n1, ncol = n2)
-  
-  # Compute correlations
-  for (i in seq_len(n1)) {
-    for (j in seq_len(n2)) {
-      res <- cor.test(mat1_df[[i]], mat2_df[[j]], method = cor_method)
-      cor_matrix[i, j] <- res$estimate
-      p_matrix[i, j] <- res$p.value
-    }
-  }
-  
-  # Add row/column names
-  rownames(cor_matrix) <- colnames(mat1_df)
-  colnames(cor_matrix) <- colnames(mat2_df)
-  rownames(p_matrix) <- colnames(mat1_df)
-  colnames(p_matrix) <- colnames(mat2_df)
-  
-  # Create long-form result table
-  result_table <- data.frame(
-    mat1_col = rep(rownames(cor_matrix), times = n2),
-    mat2_col = rep(colnames(cor_matrix), each = n1),
-    correlation_estimate = as.vector(cor_matrix),
-    correlation_significance = as.vector(p_matrix)
-  )
-  return(list("cor_matrix"=cor_matrix,
-              "p_matrix"=p_matrix,
-              "long_output"=result_table,
-              "corm" = cor_method))
-}
-make_bold_names <- function(mat, rc_fun, rc_names) {
-  bold_names <- rc_fun(mat)
-  ids <- rc_names %>% match(rc_fun(mat))
-  ids %>%
-    walk(
-      function(i)
-        bold_names[i] <<-
-        bquote(bold(.(rc_fun(mat)[i]))) %>%
-        as.expression()
-    )
-  bold_names
-}
-
-matCor_tidy <- function(...){
-  c(cor_matrix,p_matrix,long_output,corM)%<-% matCor(...)
-  cor_top <- long_output %>% 
-    set_colnames(c("var1","var2","cor","cor_pval")) %>% 
-    filter(cor_pval<0.05) %>% 
-    arrange(cor_pval)%>% 
-    group_by(var2) %>% 
-    mutate(FDR = p.adjust(cor_pval,method="BH"))
-  top_dt <- cor_top%>% 
-    mutate(cor_pval = formatC(cor_pval, format = "e", digits = 2)) %>% 
-    arrange(var1) %>% 
-    datatable()%>%
-    formatRound(columns=c('cor', 'cor_pval',"FDR"), digits=3)
-  colnames(cor_top) <- gsub("cor",corM,colnames(cor_top))
-  metric_split <- split(cor_top,cor_top$var2)
-  return(list("corMat"=cor_matrix,"top"=cor_top,"dt"=top_dt,"split"=metric_split))
-  
-}
-```
-
-```{r pearson}
-c(cor_matrix,pearson_top,pearson_dt,split_dt)%<-% matCor_tidy(olinkD,imaging_metric)
-```
-
-Showing pearson correlation coefficients between imaging metrics and olink measurements, proteins found significantly altered from two time points are highlighted in **bold**.
-
-```{r heatmap_pearson}
-#| results: asis
-#| fig-width: 6
-#| fig-height: 10
-pheatmap(cor_matrix,
-         color = colorRampPalette(c("#115f9a", "white","#991f17" ))(20),
-         main = "Pearson Correlation (Imaging vs Olink)",
-         cluster_rows = TRUE,
-         cluster_cols = TRUE,
-         fontsize_row = rel(6),
-         fontsize_col = rel(9),
-         labels_row = make_bold_names(cor_matrix, rownames, baseSig),
-         angle_col = 0)
-```
-
-Using significance level at 5% (p-value<0.05), we have the significant correlation shown in below table:
-
-```{r top_pearson}
-pearson_dt
-```
-
-Below, we also provided a result table split by three metrics we use.
-
-::: {.panel-tabset}
-```{r}
-#| results: asis
-for(i in names(split_dt)){
-  cat('##',i,' \n\n')
-  t <- split_dt[[i]]%>% 
-    mutate(pearson_pval = formatC(pearson_pval, format = "e", digits = 2)) %>% 
-    datatable()%>%
-    formatRound(columns=c('pearson', 'pearson_pval',"FDR"), digits=3)
-  print(htmltools::tagList(t))
-  cat(' \n\n')
-}
-```
-:::
-
-
-We showed the paired boxplot for olink data below to serve as reference for the identified protein associated with FAI-score.
-
-::: {.panel-tabset}
-```{r}
-#| results: asis
-#| fig-width: 4
-#| fig-height: 4
-for(i in unique(pearson_top$var1)){
-  cat('##',i,' \n\n')
-  boxD <- data2model$CT09_rm[,c("studyID","tp",i,"t1_t0")]
-  colnames(boxD)[3] <- "olink"
-  p <- ggplot(boxD, aes(tp,olink,color=tp)) +
-          geom_boxplot() +
-          geom_point()+
-          scale_color_manual(values=c("#0073C2FF","#efc000ff"))+
-          geom_line(aes(group = studyID),color="gray5") +
-          theme_minimal(base_size = 16) +
-          theme(legend.position = "none")+
-          labs(x="",y="Olink NPX")
-  print(p)
-  cat(' \n\n')
-}
-```
-:::
-
-::: {.panel-tabset}
-```{r}
-#| results: asis
-#| fig-width: 9
-#| fig-height: 3.5
-for(i in unique(pearson_top$var1)){
-  cat('##',i,' \n\n')
-  y = olinkD[,i]
-  par(mfrow = c(1, 3))
-  for (m in colnames(imaging_metric)) {
-    x = imaging_metric[,m]
-    plot(x,y,main = i,
-       xlab = m, 
-       ylab = "Change of Olink Measurement",
-       col=ifelse(rownames(imaging_metric)=="CT05","darkred","black"),
-       pch = 19, frame = FALSE)
-    lines(lowess(x, y), col = "royalblue")
-  }
-  cat(' \n\n')
-}
-```
-:::
-
-CT05 was colored red in above scatter plots, which did appear as an outlier driving some suspicious correlations.
-
-####  Spearman correlation
-
-```{r compute_spearman}
-c(cor_matrix,spearman_top,spearman_dt,split_dt)%<-% matCor_tidy(olinkD,imaging_metric,"spearman")
-```
-
-Showing spearman correlation coefficients between imaging metrics and olink measurements, proteins found significantly altered from two time points are highlighted in **bold**.
-
-```{r heatmap_spearman}
-#| results: asis
-#| fig-width: 6
-#| fig-height: 10
-pheatmap(cor_matrix,
-         color = colorRampPalette(c("#115f9a", "white","#991f17" ))(20),
-         main = "Spearman Correlation (Imaging vs Olink)",
-         cluster_rows = TRUE,
-         cluster_cols = TRUE,
-         fontsize_row = rel(6),
-         fontsize_col = rel(9),
-         labels_row = make_bold_names(cor_matrix, rownames, baseSig),
-         angle_col = 0)
-```
-
-Using significance level at 5% (p-value<0.05), we have the significant correlation shown in below table:
-
-```{r top_spearman}
-spearman_dt
-```
-
-Below, we also provided a result table split by three metrics we use.
-
-::: {.panel-tabset}
-```{r}
-#| results: asis
-for(i in names(split_dt)){
-  cat('##',i,' \n\n')
-  t <- split_dt[[i]]%>% 
-    mutate(spearman_pval = formatC(spearman_pval, format = "e", digits = 2)) %>% 
-    datatable()%>%
-    formatRound(columns=c('spearman', 'spearman_pval',"FDR"), digits=3)
- print(htmltools::tagList(t))
-  cat(' \n\n')
-}
-```
-:::
-
-
-We showed the paired boxplot for olink data below to serve as reference for the identified protein associated with FAI-score.
-
-::: {.panel-tabset}
-```{r}
-#| results: asis
-#| fig-width: 4
-#| fig-height: 4
-for(i in unique(spearman_top$var1)){
-  cat('##',i,' \n\n')
-  boxD <- data2model$CT09_rm[,c("studyID","tp",i,"t1_t0")]
-  colnames(boxD)[3] <- "olink"
-  p <- ggplot(boxD, aes(tp,olink,color=tp)) +
-          geom_boxplot() +
-          geom_point()+
-          scale_color_manual(values=c("#0073C2FF","#efc000ff"))+
-          geom_line(aes(group = studyID),color="gray5") +
-          theme_minimal(base_size = 16) +
-          theme(legend.position = "none")+
-          labs(x="",y="Olink NPX")
-  print(p)
-  cat(' \n\n')
-}
-```
-:::
-
-::: {.panel-tabset}
-```{r}
-#| results: asis
-#| fig-width: 9
-#| fig-height: 3.5
-for(i in unique(spearman_top$var1)){
-  cat('##',i,' \n\n')
-  y = olinkD[,i]
-  par(mfrow = c(1, 3))
-  for (m in colnames(imaging_metric)) {
-    x = imaging_metric[,m]
-    plot(x,y,main = i,
-       xlab = m, 
-       ylab = "Change of Olink Measurement",
-       col=ifelse(rownames(imaging_metric)=="CT05","darkred","black"),
-       pch = 19, frame = FALSE)
-    lines(lowess(x, y), col = "royalblue")
-  }
-  cat(' \n\n')
-}
-```
-:::
-
-
-####  Consistency between two types of correlations
-
-```{r}
-#| fig-width: 8
-#| fig-height: 4
-
-sets <- list(
-  `Pearson` = paste0("\n",unique(pearson_top$var1)),
-  `Spearman` = paste0("\n",unique(spearman_top$var1))
-)
-
-ggvenn(
-  data = sets,
-  fill_color = c("#66C2A5", "#FC8D62"),
-  stroke_size= 0.5,
-  set_name_size = 6,
-  text_size     = 4,
-  show_elements = TRUE 
-)
-```
-
-
-From above analysis, especially speculations of the raw data with scatterplots, CT05 did appear as an outlier in this small sample size analysis, therefore we repeat above correlation analysis with CT05 removed (N=8 now).
-
-### Analysis across 8 participants, CT05 excluded
-
-```{r pearson2}
-olinkD <- olinkD[rownames(olinkD)!="CT05",]
-imaging_metric <- imaging_metric[rownames(imaging_metric)!="CT05",]
-c(cor_matrix,pearson2_top,pearson2_dt,split_dt)%<-% matCor_tidy(olinkD,imaging_metric)
-```
-
-
-```{r spearman2}
-c(cor_matrix,spearman2_top,spearman2_dt,split_dt)%<-% matCor_tidy(olinkD,imaging_metric,"spearman")
-```
-
-
-```{r }
-#| fig-width: 8
-#| fig-height: 4
-sets <- list(
-  `Pearson` = paste0("\n",unique(pearson2_top$var1)),
-  `Spearman` = paste0("\n",unique(spearman2_top$var1))
-)
-
-ggvenn(
-  data       = sets,
-  fill_color = c("#66C2A5", "#FC8D62"),
-  stroke_size= 0.5,
-  set_name_size = 6,
-  text_size     = 4,
-  show_elements = TRUE 
-)
-```
-
-
-::: {.panel-tabset}
-```{r}
-#| results: asis
-#| fig-width: 9
-#| fig-height: 3.5
-for(i in union(pearson2_top$var1,spearman2_top$var1)){
-  cat('##',i,' \n\n')
-  y = olinkD[,i]
-  par(mfrow = c(1, 3))
-  for (m in colnames(imaging_metric)) {
-    x = imaging_metric[,m]
-    plot(x,y,main = i,
-       xlab = m, 
-       ylab = "Change of Olink Measurement",
-       col=ifelse(rownames(imaging_metric)=="CT05","darkred","black"),
-       pch = 19, frame = FALSE)
-    lines(lowess(x, y), col = "royalblue")
-  }
-  cat(' \n\n')
-}
-```
-:::
-
-```{r summary}
-ct5out <- union(pearson2_top$var1,spearman2_top$var1)
-ct5in <- union(pearson_top$var1,spearman_top$var1)
-newhits <- setdiff(ct5out,ct5in)
-```
-
-
-From this analysis excluding CT05, we did observe changes in the top hits. Particularly, we found two new hits `r paste0(newhits, collapse=",")` that were not found when CT05 was inlcuded.
-
-We showed the paired boxplot for olink data below for them to serve as reference for the identified protein associated with FAI-score.
-
-::: {.panel-tabset}
-```{r}
-#| results: asis
-#| fig-width: 4
-#| fig-height: 4
-for(i in newhits){
-  cat('##',i,' \n\n')
-  boxD <- data2model$CT09_rm[,c("studyID","tp",i,"t1_t0")]
-  colnames(boxD)[3] <- "olink"
-  p <- ggplot(boxD, aes(tp,olink,color=tp)) +
-          geom_boxplot() +
-          geom_point()+
-          scale_color_manual(values=c("#0073C2FF","#efc000ff"))+
-          geom_line(aes(group = studyID),color="gray5") +
-          theme_minimal(base_size = 16) +
-          theme(legend.position = "none")+
-          labs(x="",y="Olink NPX")
-  print(p)
-  cat(' \n\n')
-}
-```
-:::
-
-## Summary
+## Summary 
 
 - We found **`r paste0(baseSig, collapse=", ")`** proteins whose Olink measurements significantly decrease (linear mixed model with matched individual) from T1 to T2 using 10 indivisuals whose Olink measurements are available for both time points; adjusting for time between T1 and T0 does not impact the results;
 - Those `r length(baseSig)` significantly altered proteins **did not necessarily** correlate with the change of FAI-score average across three sites (LAD, LCX and RCA). `r intersect(ct5in,baseSig)` is the only protein both altered across two time points and whose change possibly correlates with the change of average FAI score;
